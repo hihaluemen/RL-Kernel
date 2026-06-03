@@ -3,14 +3,22 @@
 
 import os
 
-import torch
 from setuptools import find_packages, setup
-from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
-try:
-    from torch.utils.cpp_extension import ROCMExtension
-except ImportError:
-    ROCMExtension = None
+
+def _load_torch_extension_tools():
+    try:
+        import torch
+        from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+    except ImportError:
+        return None, None, None, None
+
+    try:
+        from torch.utils.cpp_extension import ROCMExtension
+    except ImportError:
+        ROCMExtension = None
+
+    return torch, BuildExtension, CUDAExtension, ROCMExtension
 
 
 def _cuda_define_from_env(name: str, macro: str) -> list[str]:
@@ -24,10 +32,14 @@ def _cuda_define_from_env(name: str, macro: str) -> list[str]:
 
 
 def get_extensions():
+    torch, _, CUDAExtension, ROCMExtension = _load_torch_extension_tools()
+    if torch is None:
+        return []
+
     extensions = []
     is_rocm = torch.version.hip is not None
 
-    if is_rocm:
+    if is_rocm and ROCMExtension is not None:
         extensions.append(
             ROCMExtension(
                 name="rl_engine._C",
@@ -119,22 +131,30 @@ def get_extensions():
     return extensions
 
 
+def get_cmdclass():
+    _, BuildExtension, _, _ = _load_torch_extension_tools()
+    if BuildExtension is None:
+        return {}
+    return {"build_ext": BuildExtension}
+
+
 setup(
     name="rl-engine",
     version="0.1.0",
     packages=find_packages(include=["rl_engine", "rl_engine.*"]),
     install_requires=[
-        "torch>=2.4.0",
+        "torch>=2.4.1",
         "tabulate",
         "numpy",
         "accelerate",
         "transformers",
     ],
     ext_modules=get_extensions(),
-    cmdclass={"build_ext": BuildExtension},
+    cmdclass=get_cmdclass(),
     extras_require={
         "cuda": ["flashinfer"],
         "rocm": ["aiter"],
+        "vllm": ["vllm>=0.6.0"],
     },
     python_requires=">=3.10",
     include_package_data=True,

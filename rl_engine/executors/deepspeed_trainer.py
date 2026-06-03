@@ -4,12 +4,21 @@
 from __future__ import annotations
 
 import importlib
+import os
+import sysconfig
 import time
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Optional
+from pathlib import Path
+from typing import Any, Mapping, Optional, TypeVar, overload
 
 import torch
 
+from rl_engine.executors.bridge import (
+    WeightBridgeUnavailableError,
+    WeightPublisher,
+    WeightUpdateManifest,
+    make_weight_bridge,
+)
 from rl_engine.executors.training_contract import (
     RolloutBatchMixin,
     RolloutStageResult,
@@ -22,6 +31,8 @@ from rl_engine.testing import (
     masked_mean,
     selected_logprobs_reference,
 )
+
+_TDestination = TypeVar("_TDestination", bound=dict[str, Any])
 
 
 class DeepSpeedUnavailableError(RuntimeError):
@@ -51,13 +62,26 @@ class DeepSpeedTrainingWorker(RolloutBatchMixin):
 
     config: DeepSpeedTrainingConfig
 
-    def __init__(self, config: Optional[DeepSpeedTrainingConfig] = None):
+    def __init__(
+        self,
+        config: Optional[DeepSpeedTrainingConfig] = None,
+        *,
+        weight_bridge: Optional[WeightPublisher] = None,
+        weight_transport: str = "local-clone",
+    ):
         self.config = config or DeepSpeedTrainingConfig()
         self.device = torch.device(self.config.device)
         if self.device.type == "cuda" and not torch.cuda.is_available():
             raise RuntimeError("CUDA training requested but torch.cuda.is_available() is false")
+        self.weight_bridge = weight_bridge or make_weight_bridge(
+            weight_transport,
+            source_worker="deepspeed-training",
+            source_rank=0,
+        )
+        self._latest_published_weight_version = -1
 
         deepspeed = _load_deepspeed()
+        self._deepspeed = deepspeed
         torch.manual_seed(self.config.seed)
         self.model = torch.nn.Sequential(
             torch.nn.Embedding(self.config.vocab_size, self.config.hidden_dim),
@@ -108,7 +132,7 @@ class DeepSpeedTrainingWorker(RolloutBatchMixin):
         self.engine.step()
 
         finished_at = time.perf_counter()
-        published = rollout.weight_version + 1
+        published = self._next_published_weight_version(rollout.weight_version)
         return TrainingStageResult(
             iteration=rollout.iteration,
             consumed_weight_version=rollout.weight_version,
@@ -127,6 +151,104 @@ class DeepSpeedTrainingWorker(RolloutBatchMixin):
             finished_at=finished_at,
         )
 
+    def publish_weights(
+        self,
+        *,
+        weight_version: int,
+        metadata: Optional[Mapping[str, Any]] = None,
+    ) -> WeightUpdateManifest:
+        """
+        Publish the current DeepSpeed model state as a complete weight manifest.
+
+        ZeRO-3 partitions parameters across ranks, so publication first exports
+        a gathered full-state view through DeepSpeed's gather context. If the
+        runtime cannot provide a safe full-state view, the worker fails
+        explicitly instead of publishing a shard.
+        """
+        manifest_metadata = dict(metadata or {})
+        layout = {
+            "kind": "full-state",
+            "zero_stage": self.config.zero_stage,
+            "world_size": self._engine_world_size(),
+            "rank": self._engine_rank(),
+        }
+        layout.update(dict(manifest_metadata.get("layout", {})))
+        manifest_metadata["layout"] = layout
+        publish_model: torch.nn.Module = self.model
+        if self.config.zero_stage >= 3:
+            publish_model, export_metadata = self._export_zero3_full_state_model()
+            manifest_metadata["deepspeed_zero3_full_state_export"] = export_metadata
+        return self.weight_bridge.publish(
+            publish_model,
+            weight_version=weight_version,
+            metadata=manifest_metadata,
+        )
+
+    def release_weights(self, update_id: str) -> None:
+        self.weight_bridge.release(update_id)
+
+    def _next_published_weight_version(self, consumed_weight_version: int) -> int:
+        published = max(
+            int(consumed_weight_version) + 1,
+            self._latest_published_weight_version + 1,
+        )
+        self._latest_published_weight_version = published
+        return published
+
+    def _export_zero3_full_state_model(self) -> tuple[torch.nn.Module, Mapping[str, Any]]:
+        model = getattr(self.engine, "module", self.model)
+        rank = self._engine_rank()
+        if rank != 0:
+            raise WeightBridgeUnavailableError(
+                "DeepSpeed ZeRO-3 full-state publish is only supported from rank 0 "
+                "in this worker contract."
+            )
+
+        gathered_parameters = getattr(
+            getattr(self._deepspeed, "zero", None),
+            "GatheredParameters",
+            None,
+        )
+        parameters = list(model.parameters())
+        if callable(gathered_parameters):
+            with gathered_parameters(parameters, modifier_rank=0):
+                state = _clone_state_dict(model.state_dict())
+            method = "deepspeed.zero.GatheredParameters"
+        elif self._engine_world_size() == 1:
+            state = _clone_state_dict(model.state_dict())
+            method = "single-rank-state-dict"
+        else:
+            raise WeightBridgeUnavailableError(
+                "DeepSpeed ZeRO-3 publish requires deepspeed.zero.GatheredParameters "
+                "or an equivalent full-state export API before rollout workers can "
+                "consume the weight manifest."
+            )
+
+        if not state:
+            raise WeightBridgeUnavailableError(
+                "DeepSpeed ZeRO-3 full-state export produced no tensors"
+            )
+        return _StateDictModule(state), {
+            "method": method,
+            "rank": rank,
+            "world_size": self._engine_world_size(),
+            "tensor_count": len(state),
+        }
+
+    def _engine_world_size(self) -> int:
+        for attr in ("world_size", "dp_world_size"):
+            value = getattr(self.engine, attr, None)
+            if value is not None:
+                return int(value)
+        return 1
+
+    def _engine_rank(self) -> int:
+        for attr in ("global_rank", "rank", "local_rank"):
+            value = getattr(self.engine, attr, None)
+            if value is not None:
+                return int(value)
+        return 0
+
     def _resolved_deepspeed_config(self) -> dict[str, Any]:
         batch_size = max(1, self.config.num_prompts * self.config.samples_per_prompt)
         base = {
@@ -140,6 +262,7 @@ class DeepSpeedTrainingWorker(RolloutBatchMixin):
 
 
 def _load_deepspeed() -> Any:
+    _configure_cuda_home_from_python_packages()
     try:
         return importlib.import_module("deepspeed")
     except ImportError as exc:
@@ -148,6 +271,74 @@ def _load_deepspeed() -> Any:
             "runtime supported by the active Python/PyTorch/CUDA environment before "
             "running DeepSpeedTrainingWorker."
         ) from exc
+    except Exception as exc:
+        raise DeepSpeedUnavailableError(
+            "DeepSpeed is installed but failed to import in this Python/PyTorch/CUDA "
+            "environment. If CUDA is provided by Python NVIDIA wheels, ensure CUDA_HOME "
+            "points to the wheel toolkit root that contains bin/nvcc and include/cuda.h."
+        ) from exc
+
+
+def _configure_cuda_home_from_python_packages() -> None:
+    explicit_cuda_home = os.environ.get("CUDA_HOME")
+    if explicit_cuda_home:
+        _sync_torch_cuda_home(Path(explicit_cuda_home))
+        return
+    for candidate in _python_cuda_home_candidates():
+        if _looks_like_cuda_home(candidate):
+            os.environ["CUDA_HOME"] = str(candidate)
+            _sync_torch_cuda_home(candidate)
+            _prepend_env_path("PATH", candidate / "bin")
+            for lib_dir_name in ("lib64", "lib"):
+                lib_dir = candidate / lib_dir_name
+                if lib_dir.is_dir():
+                    _prepend_env_path("LD_LIBRARY_PATH", lib_dir)
+            return
+
+
+def _python_cuda_home_candidates() -> list[Path]:
+    candidates: list[Path] = []
+
+    site_roots: set[Path] = set()
+    for key in ("purelib", "platlib"):
+        value = sysconfig.get_paths().get(key)
+        if value:
+            site_roots.add(Path(value))
+    for site_root in site_roots:
+        nvidia_root = site_root / "nvidia"
+        if nvidia_root.is_dir():
+            candidates.extend(sorted(nvidia_root.glob("cu*"), reverse=True))
+
+    try:
+        from torch.utils.cpp_extension import CUDA_HOME
+    except Exception:
+        CUDA_HOME = None
+    if CUDA_HOME:
+        candidates.append(Path(str(CUDA_HOME)))
+    return candidates
+
+
+def _looks_like_cuda_home(path: Path) -> bool:
+    return (path / "bin" / "nvcc").is_file() and (path / "include" / "cuda.h").is_file()
+
+
+def _sync_torch_cuda_home(path: Path) -> None:
+    try:
+        import torch.utils.cpp_extension as cpp_extension
+    except Exception:
+        return
+    cpp_extension.CUDA_HOME = str(path)
+
+
+def _prepend_env_path(key: str, path: Path) -> None:
+    value = str(path)
+    current = os.environ.get(key)
+    if not current:
+        os.environ[key] = value
+        return
+    entries = current.split(os.pathsep)
+    if value not in entries:
+        os.environ[key] = os.pathsep.join([value, *entries])
 
 
 def _first_initialize_result(init_result: Any) -> Any:
@@ -169,6 +360,48 @@ def _extract_logits(model_output: Any) -> torch.Tensor:
     if isinstance(model_output, (tuple, list)) and model_output:
         return _extract_logits(model_output[0])
     raise TypeError(f"DeepSpeed model output does not expose logits: {type(model_output)!r}")
+
+
+class _StateDictModule(torch.nn.Module):
+    def __init__(self, state_dict: Mapping[str, torch.Tensor]):
+        super().__init__()
+        self._state_dict = dict(state_dict)
+
+    @overload
+    def state_dict(
+        self,
+        *,
+        destination: _TDestination,
+        prefix: str = "",
+        keep_vars: bool = False,
+    ) -> _TDestination: ...
+
+    @overload
+    def state_dict(
+        self,
+        *,
+        prefix: str = "",
+        keep_vars: bool = False,
+    ) -> dict[str, Any]: ...
+
+    def state_dict(
+        self,
+        destination: Optional[dict[str, Any]] = None,
+        prefix: str = "",
+        keep_vars: bool = False,
+    ) -> dict[str, Any]:
+        target = destination if destination is not None else {}
+        for name, tensor in self._state_dict.items():
+            target[f"{prefix}{name}"] = tensor if keep_vars else tensor.detach()
+        return target
+
+
+def _clone_state_dict(state_dict: Mapping[str, Any]) -> dict[str, torch.Tensor]:
+    return {
+        name: tensor.detach().clone(memory_format=torch.preserve_format)
+        for name, tensor in state_dict.items()
+        if isinstance(tensor, torch.Tensor)
+    }
 
 
 def _deep_merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:

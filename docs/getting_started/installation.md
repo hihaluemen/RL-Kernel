@@ -21,6 +21,13 @@ pip install -e ".[cuda]"
 pip install -e ".[rocm]"
 ```
 
+```bash
+pip install -e ".[vllm]"
+```
+
+Install the vLLM extra only on rollout or benchmark environments that need the
+vLLM runtime. Core CI and mocked integration tests do not require it.
+
 ## Development Dependencies
 
 ```bash
