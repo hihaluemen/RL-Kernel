@@ -48,7 +48,7 @@ Integrating **FlashInfer** fused kernels to accelerate the bottleneck of RL trai
 ## Key Features
 
 - **Zero-Growth Memory Pool**: Uses pre-allocated buffers and micro-chunking to prevent VRAM spikes during advantage calculation.
-- **Fused Sampling Pipeline**: Direct integration with **FlashInfer** and **vLLM** backends for sub-1ms sampling latency.
+- **Fused Sampling Pipeline**: Direct integration with **FlashInfer** and **vLLM** backends for sub-2ms sampling latency.
 - **Universal Backend Abstraction**: Unified API supporting both **NVIDIA (CUDA/FlashInfer)** and **AMD (ROCm/AITER)**.
 - **Post-Training Ready**: Drop-in replacement for standard sampling and logprob operators in TRL or DeepSpeed-Chat.
 
