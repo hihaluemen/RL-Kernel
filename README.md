@@ -14,7 +14,7 @@
   <a href="https://discord.gg/RGUQrr74z"><img src="https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
-**RL-Kernel** is a high-performance, memory-efficient infrastructure for Reinforcement Learning (RL) post-training. It eliminates the memory and latency bottlenecks in Large Language Model (LLM) alignment, This project targets AI infrastructure engineers, algorithm researchers, and enterprise-level large model alignment scenarios, providing specialized kernels for algorithms like **GRPO**, **PPO**, and **DPO**.
+**RL-Kernel** is a high-performance, memory-efficient infrastructure for Reinforcement Learning post-training. It eliminates the memory and latency bottlenecks in Large Language Model alignment, This project targets AI infrastructure engineers, algorithm researchers, and enterprise-level large model alignment scenarios, providing specialized kernels for algorithms like **GRPO**, **PPO**, and **DPO**.
 
 ---
 
