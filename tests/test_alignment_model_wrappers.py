@@ -52,7 +52,7 @@ def test_extract_logits_rejects_missing_or_invalid_logits():
     with pytest.raises(TypeError, match="logits"):
         extract_logits({"hidden_states": torch.randn(1, 2)})
 
-    with pytest.raises(TypeError, match="torch.Tensor"):
+    with pytest.raises(TypeError, match=r"torch\.Tensor"):
         extract_logits(ObjectOutput(logits="not-a-tensor"))
 
 
