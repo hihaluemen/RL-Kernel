@@ -25,21 +25,21 @@ def test_device_and_registry():
     logger.info(f"Retrieved Attention Operator: {attn_op}")
 
 
-def test_rocm_attention_uses_native_sdpa_by_default(monkeypatch):
+def test_rocm_attention_uses_flash_attention_by_default(monkeypatch):
     monkeypatch.delenv("RL_KERNEL_ROCM_ATTN_BACKEND", raising=False)
 
     registry = KernelRegistry()
 
-    assert registry._priority_map["rocm"]["attn"][0] == OpBackend.PYTORCH_ATTN
+    assert registry._priority_map["rocm"]["attn"][0] == OpBackend.ROCM_FLASH_ATTN
 
 
-def test_rocm_attention_flash_attn_opt_in(monkeypatch):
-    monkeypatch.setenv("RL_KERNEL_ROCM_ATTN_BACKEND", " flash_attn ")
+def test_rocm_attention_native_sdpa_opt_out(monkeypatch):
+    monkeypatch.setenv("RL_KERNEL_ROCM_ATTN_BACKEND", " sdpa ")
 
     registry = KernelRegistry()
 
-    assert registry._priority_map["rocm"]["attn"][0] == OpBackend.ROCM_FLASH_ATTN
-    assert registry._priority_map["rocm"]["attn"][1] == OpBackend.PYTORCH_ATTN
+    assert registry._priority_map["rocm"]["attn"][0] == OpBackend.PYTORCH_ATTN
+    assert registry._priority_map["rocm"]["attn"][1] == OpBackend.ROCM_FLASH_ATTN
 
 
 def test_executor_flow():

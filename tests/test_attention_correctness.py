@@ -58,6 +58,10 @@ def pytorch_sdpa_reference(q, k, v, *, causal, softmax_scale):
     """
     Compute a PyTorch SDPA math-backend reference for FlashAttention-layout inputs.
 
+    The reference runs in fp32 and validates each low-precision backend against
+    that golden value. It does not guarantee CUDA and ROCm backends are
+    numerically identical to each other.
+
     Inputs use FlashAttention layout: (batch, seqlen, nheads, headdim).
     PyTorch SDPA uses: (batch, nheads, seqlen, headdim), so this helper
     transposes before and after the reference call.
@@ -79,11 +83,13 @@ def pytorch_sdpa_reference(q, k, v, *, causal, softmax_scale):
     return expected.transpose(1, 2).contiguous()
 
 
-def make_qkv(batch, seqlen, nheads, headdim, device, dtype):
+def make_qkv(batch, seqlen, nheads, headdim, device, dtype, nheads_k=None):
     torch.manual_seed(0)
+    if nheads_k is None:
+        nheads_k = nheads
     q = torch.randn(batch, seqlen, nheads, headdim, device=device, dtype=dtype)
-    k = torch.randn(batch, seqlen, nheads, headdim, device=device, dtype=dtype)
-    v = torch.randn(batch, seqlen, nheads, headdim, device=device, dtype=dtype)
+    k = torch.randn(batch, seqlen, nheads_k, headdim, device=device, dtype=dtype)
+    v = torch.randn(batch, seqlen, nheads_k, headdim, device=device, dtype=dtype)
     return q, k, v
 
 
@@ -310,6 +316,30 @@ def test_rocm_flash_attention_matches_sdpa(
     )
 
 
+@pytest.mark.parametrize(
+    "causal",
+    (pytest.param(False, id="noncausal"), pytest.param(True, id="causal")),
+)
+def test_rocm_flash_attention_rejects_unsupported_head_dim(causal):
+    available, reason = rocm_flash_attention_availability()
+    if not available:
+        pytest.skip(reason)
+
+    from rl_engine.kernels.ops.rocm.attention.flash_attn import RocmFlashAttentionOp
+
+    q, k, v = make_qkv(
+        batch=1,
+        seqlen=64,
+        nheads=2,
+        headdim=513,
+        device=torch.device("cuda"),
+        dtype=torch.float16,
+    )
+
+    with pytest.raises(NotImplementedError, match="head_dim <= 512"):
+        RocmFlashAttentionOp()(q, k, v, causal=causal)
+
+
 @pytest.mark.parametrize(("dtype", "atol", "rtol"), DTYPE_CASES)
 @pytest.mark.parametrize(
     "causal",
@@ -349,3 +379,64 @@ def test_native_attention_matches_sdpa(
         nheads,
         headdim,
     )
+
+
+@pytest.mark.parametrize(
+    ("nheads", "nheads_k"),
+    (pytest.param(8, 4, id="gqa"), pytest.param(8, 1, id="mqa")),
+)
+@pytest.mark.parametrize(
+    "causal",
+    (pytest.param(False, id="noncausal"), pytest.param(True, id="causal")),
+)
+def test_native_attention_supports_gqa_mqa(nheads, nheads_k, causal):
+    available, reason = native_attention_availability()
+    if not available:
+        pytest.skip(reason)
+
+    from rl_engine.kernels.ops.pytorch.attention import NativeAttentionOp
+
+    device = torch.device("cuda")
+    dtype = torch.float16
+    q, k, v = make_qkv(
+        batch=1,
+        seqlen=128,
+        nheads=nheads,
+        nheads_k=nheads_k,
+        headdim=64,
+        device=device,
+        dtype=dtype,
+    )
+
+    actual = NativeAttentionOp()(q, k, v, dropout_p=0.0, causal=causal)
+    repeat = nheads // nheads_k
+    expected = pytorch_sdpa_reference(
+        q,
+        k.repeat_interleave(repeat, dim=2),
+        v.repeat_interleave(repeat, dim=2),
+        causal=causal,
+        softmax_scale=None,
+    )
+
+    torch.testing.assert_close(actual.float(), expected.float(), atol=1e-3, rtol=1e-3)
+
+
+def test_native_attention_rejects_invalid_gqa_head_ratio():
+    available, reason = native_attention_availability()
+    if not available:
+        pytest.skip(reason)
+
+    from rl_engine.kernels.ops.pytorch.attention import NativeAttentionOp
+
+    q, k, v = make_qkv(
+        batch=1,
+        seqlen=128,
+        nheads=10,
+        nheads_k=3,
+        headdim=64,
+        device=torch.device("cuda"),
+        dtype=torch.float16,
+    )
+
+    with pytest.raises(ValueError, match="q heads must be divisible"):
+        NativeAttentionOp()(q, k, v)

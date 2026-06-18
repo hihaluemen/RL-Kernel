@@ -87,8 +87,8 @@ class KernelRegistry:
             "rocm": {
                 "logp": [OpBackend.ROCM_AITER, OpBackend.TRITON_GENERIC, OpBackend.PYTORCH_NATIVE],
                 "attn": [
-                    OpBackend.PYTORCH_ATTN,
                     OpBackend.ROCM_FLASH_ATTN,
+                    OpBackend.PYTORCH_ATTN,
                     OpBackend.TRITON_GENERIC,
                 ],
                 "grpo_loss": [OpBackend.TRITON_GRPO_LOSS, OpBackend.PYTORCH_GRPO_LOSS],
@@ -102,8 +102,8 @@ class KernelRegistry:
             },
         }
         logger.info(f"KernelRegistry initialized for {device_ctx.device_type}")
-        self._adjust_priority_from_env()
         self._adjust_priority_for_hardware()
+        self._adjust_priority_from_env()
 
     def _adjust_priority_from_env(self):
         rocm_attn_backend = os.getenv("RL_KERNEL_ROCM_ATTN_BACKEND", "").strip().lower()
@@ -111,6 +111,12 @@ class KernelRegistry:
             self._priority_map["rocm"]["attn"] = [
                 OpBackend.ROCM_FLASH_ATTN,
                 OpBackend.PYTORCH_ATTN,
+                OpBackend.TRITON_GENERIC,
+            ]
+        elif rocm_attn_backend in {"native", "pytorch", "sdpa"}:
+            self._priority_map["rocm"]["attn"] = [
+                OpBackend.PYTORCH_ATTN,
+                OpBackend.ROCM_FLASH_ATTN,
                 OpBackend.TRITON_GENERIC,
             ]
         elif rocm_attn_backend and rocm_attn_backend not in {"native", "pytorch", "sdpa"}:
