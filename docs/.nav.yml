@@ -10,6 +10,7 @@ nav:
       - getting_started/faq.md
     - Operators:
       - operators/README.md
+      - operators/activation.md
       - operators/fused-logp.md
       - operators/grpo-loss.md
       - operators/ratio-kl.md

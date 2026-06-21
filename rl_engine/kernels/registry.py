@@ -44,6 +44,8 @@ class OpBackend(Enum, metaclass=_KernelEnumMeta):
     # Generic fallback
     TRITON_GENERIC = "rl_engine.kernels.ops.triton.generic.TritonOp"
     PYTORCH_NATIVE = "rl_engine.kernels.ops.pytorch.loss.logp.NativeLogpOp"
+    PYTORCH_NATIVE_SILU = "rl_engine.kernels.ops.pytorch.activation.swiglu.NativeSiLUOp"
+    PYTORCH_NATIVE_SWIGLU = "rl_engine.kernels.ops.pytorch.activation.swiglu.NativeSwiGLUOp"
 
 
 class KernelRegistry:
@@ -79,6 +81,8 @@ class KernelRegistry:
                 "attn": [OpBackend.FLASH_ATTN, OpBackend.TRITON_GENERIC, OpBackend.PYTORCH_NATIVE],
                 "grpo_loss": [OpBackend.TRITON_GRPO_LOSS, OpBackend.PYTORCH_GRPO_LOSS],
                 "ratio_kl": [OpBackend.TRITON_RATIO_KL, OpBackend.PYTORCH_RATIO_KL],
+                "silu": [OpBackend.PYTORCH_NATIVE_SILU],
+                "swiglu": [OpBackend.PYTORCH_NATIVE_SWIGLU],
                 # Default dispatch logic for new operators
             },
             "rocm": {
@@ -86,12 +90,16 @@ class KernelRegistry:
                 "attn": [OpBackend.TRITON_GENERIC, OpBackend.PYTORCH_NATIVE],
                 "grpo_loss": [OpBackend.TRITON_GRPO_LOSS, OpBackend.PYTORCH_GRPO_LOSS],
                 "ratio_kl": [OpBackend.TRITON_RATIO_KL, OpBackend.PYTORCH_RATIO_KL],
+                "silu": [OpBackend.PYTORCH_NATIVE_SILU],
+                "swiglu": [OpBackend.PYTORCH_NATIVE_SWIGLU],
             },
             "cpu": {
                 "logp": [OpBackend.PYTORCH_NATIVE],
                 "attn": [OpBackend.PYTORCH_NATIVE],
                 "grpo_loss": [OpBackend.PYTORCH_GRPO_LOSS],
                 "ratio_kl": [OpBackend.PYTORCH_RATIO_KL],
+                "silu": [OpBackend.PYTORCH_NATIVE_SILU],
+                "swiglu": [OpBackend.PYTORCH_NATIVE_SWIGLU],
             },
         }
         logger.info(f"KernelRegistry initialized for {device_ctx.device_type}")

@@ -18,6 +18,7 @@ Every operator page should include:
 
 ## Current Pages
 
+- [SiLU / SwiGLU Activation](activation.md)
 - [Fused LogP](fused-logp.md)
 - [GRPO Loss](grpo-loss.md)
 - [Policy Ratio + KL Penalty](ratio-kl.md)
