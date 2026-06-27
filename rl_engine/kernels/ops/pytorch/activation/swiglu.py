@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import torch
+import torch.nn as nn
 
 
-class NativeSiLUOp:
+class NativeSiLUOp(nn.Module):
     """
     Pure PyTorch native SiLU reference.
     out = x * sigmoid(x)   (a.k.a. Swish)
@@ -17,10 +18,7 @@ class NativeSiLUOp:
     """
 
     def __init__(self) -> None:
-        pass
-
-    def __call__(self, x: torch.Tensor) -> torch.Tensor:
-        return self.forward(x)
+        super().__init__()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -43,7 +41,7 @@ class NativeSiLUOp:
         return out.to(output_dtype)
 
 
-class NativeSwiGLUOp:
+class NativeSwiGLUOp(nn.Module):
     """
     Pure PyTorch native SwiGLU reference.
     out = silu(gate) * up = (gate * sigmoid(gate)) * up
@@ -55,10 +53,7 @@ class NativeSwiGLUOp:
     """
 
     def __init__(self) -> None:
-        pass
-
-    def __call__(self, gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
-        return self.forward(gate, up)
+        super().__init__()
 
     def forward(self, gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
         """

@@ -122,6 +122,49 @@ def test_swiglu_gradient_flows():
     assert torch.isfinite(gate.grad).all() and torch.isfinite(up.grad).all()
 
 
+def test_silu_backward_batch_invariance_slice():
+    """Axis A: Gradients must be bitwise identical regardless of batch size."""
+    op = NativeSiLUOp()
+
+    x_full = _rand((8, 32, _INTERMEDIATE), seed=1).requires_grad_(True)
+    out_full = op.forward_fp32(x_full)
+
+    dy_full = _rand(out_full.shape, seed=3)
+    out_full.backward(dy_full)
+
+    grad_full_sliced = x_full.grad[:1].clone()
+
+    x_slice = _rand((8, 32, _INTERMEDIATE), seed=1)[:1].detach().requires_grad_(True)
+    out_slice = op.forward_fp32(x_slice)
+    out_slice.backward(dy_full[:1])
+
+    assert torch.equal(x_slice.grad, grad_full_sliced)
+
+
+def test_swiglu_backward_batch_invariance_slice():
+    """Axis A: Gradients must be bitwise identical regardless of batch size."""
+    op = NativeSwiGLUOp()
+
+    gate_full = _rand((8, 32, _INTERMEDIATE), seed=1).requires_grad_(True)
+    up_full = _rand((8, 32, _INTERMEDIATE), seed=2).requires_grad_(True)
+    out_full = op.forward_fp32(gate_full, up_full)
+
+    dy_full = _rand(out_full.shape, seed=3)
+    out_full.backward(dy_full)
+
+    grad_gate_full_sliced = gate_full.grad[:1].clone()
+    grad_up_full_sliced = up_full.grad[:1].clone()
+
+    gate_slice = _rand((8, 32, _INTERMEDIATE), seed=1)[:1].detach().requires_grad_(True)
+    up_slice = _rand((8, 32, _INTERMEDIATE), seed=2)[:1].detach().requires_grad_(True)
+    out_slice = op.forward_fp32(gate_slice, up_slice)
+
+    out_slice.backward(dy_full[:1])
+
+    assert torch.equal(gate_slice.grad, grad_gate_full_sliced)
+    assert torch.equal(up_slice.grad, grad_up_full_sliced)
+
+
 def test_registry_dispatches_native_activation_ops():
     assert isinstance(kernel_registry.get_op("silu"), NativeSiLUOp)
     assert isinstance(kernel_registry.get_op("swiglu"), NativeSwiGLUOp)

@@ -9,7 +9,7 @@ the "correct answer" that downstream fused CUDA/Triton MLP kernels are validated
   stage. `gate` / `up` are the `gate_proj` / `up_proj` outputs (already at the intermediate
   width); the following `down_proj` is a plain Matmul and is **not** part of this operator.
 
-```
+```text
 hidden --gate_proj--> gate --\
                               swiglu --> down_proj --> hidden
 hidden --up_proj----> up ----/
