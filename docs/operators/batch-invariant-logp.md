@@ -27,6 +27,7 @@ logp = batch_invariant_logp(
     logits,       # [B, T, V] or [N, V], differentiable
     target_ids,   # [B, T] or [N], int
     ignore_index=-100,
+    validate=False,  # opt-in target range check (syncs CUDA stream)
 )                # -> [B, T] or [N], float32
 
 logp.sum().backward()  # gradients flow into logits only
@@ -47,6 +48,8 @@ CPU:         PyTorch
 ```
 
 A compiled CUDA backend and benchmark suite are planned follow-up work.
+Benchmarks are not included in this PR; they will be added alongside the CUDA
+backend in a subsequent PR.
 
 ## Tensor Contract
 
@@ -86,8 +89,13 @@ out[row] = 0.0
 grad_logits[row, :] = 0.0
 ```
 
-Non-ignored target ids outside `[0, V)` raise `ValueError`. In particular,
-`target=-1` is invalid unless `ignore_index=-1`.
+Non-ignored target ids outside `[0, V)` raise `ValueError` when
+`validate=True`. In particular, `target=-1` is invalid unless
+`ignore_index=-1`.
+
+`validate=False` (default) skips the target range check to avoid CUDA stream
+synchronization in training hot paths. Use `validate=True` during debugging or
+in tests.
 
 ## Batch-Invariance
 
@@ -147,21 +155,16 @@ out.sum().backward()
 
 ```bash
 python -m pytest tests/test_batch_invariant_logp.py -q -rs
-python -m pytest tests/test_triton_batch_invariant_logp.py -q -rs
-python -m pytest tests/test_batch_invariant_logp.py tests/test_triton_batch_invariant_logp.py -q -rs
 ```
 
-The PyTorch tests cover correctness, leading-shape preservation,
-batch-invariance, validation, ignore-index behavior, backward correctness, CUDA
-smoke cases, and registry dispatch.
+All backends (Native, Triton) are tested in a single file. Coverage includes:
+correctness, leading-shape preservation, batch-invariance (bitwise), validation,
+ignore-index behavior, backward correctness, CUDA smoke cases, registry
+dispatch, and Triton-specific fp32/fp16/bf16 correctness, large vocab, backward
+gradient batch-invariance, and ignored-row zero gradients.
 
-The Triton tests cover fp32/fp16/bf16 correctness, large vocab, 3D leading
-shapes, batch-size and position invariance, repeated-run determinism, backward
-correctness, gradient batch-invariance, ignored-row zero gradients, and invalid
-input rejection.
-
-Triton tests skip when Triton or CUDA is unavailable. On Windows, run the Triton
-suite from WSL/Linux with CUDA.
+Triton tests skip when Triton or CUDA is unavailable. On Windows, run via
+WSL/Linux with CUDA.
 
 ## Implementation Files
 
@@ -169,4 +172,3 @@ suite from WSL/Linux with CUDA.
 - `rl_engine/kernels/ops/triton/loss/batch_invariant_logp.py`
 - `rl_engine/kernels/registry.py`
 - `tests/test_batch_invariant_logp.py`
-- `tests/test_triton_batch_invariant_logp.py`

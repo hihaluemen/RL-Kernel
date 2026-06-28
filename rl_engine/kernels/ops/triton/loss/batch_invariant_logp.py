@@ -200,45 +200,48 @@ class TritonBatchInvariantLogpOp:
         logits: torch.Tensor,
         target_ids: torch.Tensor,
         ignore_index: int = -100,
+        *,
+        validate: bool = False,
     ) -> torch.Tensor:
-        return self.apply(logits, target_ids, ignore_index=ignore_index)
+        return self.apply(logits, target_ids, ignore_index=ignore_index, validate=validate)
 
     def apply(
         self,
         logits: torch.Tensor,
         target_ids: torch.Tensor,
         ignore_index: int = -100,
+        *,
+        validate: bool = False,
     ) -> torch.Tensor:
         if logits.device.type not in ("cuda", "xpu", "hip"):
             raise RuntimeError(
                 "TritonBatchInvariantLogpOp requires a GPU tensor "
                 f"(CUDA / ROCm / XPU), got device '{logits.device}'."
             )
-
         if logits.dim() < 2:
             raise ValueError(
                 f"logits must be at least 2-D ([*lead, V]), got shape "
                 f"{tuple(logits.shape)}"
             )
-
         if logits.shape[:-1] != target_ids.shape:
             raise ValueError(
                 f"logits leading shape {tuple(logits.shape[:-1])} must match "
                 f"target_ids shape {tuple(target_ids.shape)}"
             )
 
-        vocab_size = logits.size(-1)
-        target_flat = target_ids.reshape(-1)
-        valid_targets = target_flat[target_flat != ignore_index]
-        if valid_targets.numel() > 0 and (
-            (valid_targets < 0).any() or (valid_targets >= vocab_size).any()
-        ):
-            bad = valid_targets[
-                (valid_targets < 0) | (valid_targets >= vocab_size)
-            ]
-            raise ValueError(
-                f"target_ids contains values outside [0, {vocab_size}): "
-                f"{bad.tolist()}"
-            )
+        if validate:
+            vocab_size = logits.size(-1)
+            target_flat = target_ids.reshape(-1)
+            valid_targets = target_flat[target_flat != ignore_index]
+            if valid_targets.numel() > 0 and (
+                (valid_targets < 0).any() or (valid_targets >= vocab_size).any()
+            ):
+                bad = valid_targets[
+                    (valid_targets < 0) | (valid_targets >= vocab_size)
+                ]
+                raise ValueError(
+                    f"target_ids contains values outside [0, {vocab_size}): "
+                    f"{bad.tolist()}"
+                )
 
         return _BatchInvariantLogpFunction.apply(logits, target_ids, ignore_index)

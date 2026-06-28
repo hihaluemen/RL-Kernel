@@ -24,14 +24,18 @@ class NativeBatchInvariantLogpOp:
         logits: torch.Tensor,
         target_ids: torch.Tensor,
         ignore_index: int = -100,
+        *,
+        validate: bool = False,
     ) -> torch.Tensor:
-        return self.apply(logits, target_ids, ignore_index=ignore_index)
+        return self.apply(logits, target_ids, ignore_index=ignore_index, validate=validate)
 
     def apply(
         self,
         logits: torch.Tensor,
         target_ids: torch.Tensor,
         ignore_index: int = -100,
+        *,
+        validate: bool = False,
     ) -> torch.Tensor:
         self._validate_shapes(logits, target_ids)
 
@@ -42,7 +46,7 @@ class NativeBatchInvariantLogpOp:
         target_1d = target_ids.reshape(-1).to(logits.device, dtype=torch.long)
 
         selected_logp = self._row_wise_selected_logprob(
-            logits_2d, target_1d, ignore_index=ignore_index
+            logits_2d, target_1d, ignore_index=ignore_index, validate=validate
         )
 
         return selected_logp.reshape(lead_shape)
@@ -56,6 +60,7 @@ class NativeBatchInvariantLogpOp:
         target_1d: torch.Tensor,
         *,
         ignore_index: int,
+        validate: bool = False,
     ) -> torch.Tensor:
         """Per-row selected logprob with locked reduction order.
 
@@ -72,15 +77,15 @@ class NativeBatchInvariantLogpOp:
 
         valid_mask = target_1d != ignore_index
 
-        valid_targets = target_1d[valid_mask]
-        # Check if target_ids contains values outside the valid range.
-        if valid_targets.numel() > 0 and (
-            (valid_targets < 0).any() or (valid_targets >= vocab_size).any()
-        ):
-            bad = valid_targets[(valid_targets < 0) | (valid_targets >= vocab_size)]
-            raise ValueError(
-                f"target_ids contains values outside [0, {vocab_size}): {bad.tolist()}"
-            )
+        if validate:
+            valid_targets = target_1d[valid_mask]
+            if valid_targets.numel() > 0 and (
+                (valid_targets < 0).any() or (valid_targets >= vocab_size).any()
+            ):
+                bad = valid_targets[(valid_targets < 0) | (valid_targets >= vocab_size)]
+                raise ValueError(
+                    f"target_ids contains values outside [0, {vocab_size}): {bad.tolist()}"
+                )
 
         safe_target = target_1d.clone()
         safe_target[~valid_mask] = 0
