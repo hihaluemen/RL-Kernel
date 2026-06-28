@@ -25,7 +25,7 @@ class NativeBatchInvariantLogpOp:
         target_ids: torch.Tensor,
         ignore_index: int = -100,
         *,
-        validate: bool = False,
+        validate: bool = True,
     ) -> torch.Tensor:
         return self.apply(logits, target_ids, ignore_index=ignore_index, validate=validate)
 
@@ -35,7 +35,7 @@ class NativeBatchInvariantLogpOp:
         target_ids: torch.Tensor,
         ignore_index: int = -100,
         *,
-        validate: bool = False,
+        validate: bool = True,
     ) -> torch.Tensor:
         self._validate_shapes(logits, target_ids)
 
@@ -60,7 +60,7 @@ class NativeBatchInvariantLogpOp:
         target_1d: torch.Tensor,
         *,
         ignore_index: int,
-        validate: bool = False,
+        validate: bool = True,
     ) -> torch.Tensor:
         """Per-row selected logprob with locked reduction order.
 

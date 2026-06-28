@@ -27,7 +27,7 @@ logp = batch_invariant_logp(
     logits,       # [B, T, V] or [N, V], differentiable
     target_ids,   # [B, T] or [N], int
     ignore_index=-100,
-    validate=False,  # opt-in target range check (syncs CUDA stream)
+    validate=False,  # Triton fast path; use True to debug-check target range
 )                # -> [B, T] or [N], float32
 
 logp.sum().backward()  # gradients flow into logits only
@@ -89,13 +89,13 @@ out[row] = 0.0
 grad_logits[row, :] = 0.0
 ```
 
-Non-ignored target ids outside `[0, V)` raise `ValueError` when
-`validate=True`. In particular, `target=-1` is invalid unless
-`ignore_index=-1`.
+Non-ignored target ids outside `[0, V)` are invalid. In particular,
+`target=-1` is invalid unless `ignore_index=-1`.
 
-`validate=False` (default) skips the target range check to avoid CUDA stream
-synchronization in training hot paths. Use `validate=True` during debugging or
-in tests.
+The PyTorch native backend validates target ranges by default. The Triton
+backend defaults to `validate=False` to avoid CUDA stream synchronization in
+training hot paths. Use `validate=True` during debugging or in tests when
+calling the Triton backend with untrusted targets.
 
 ## Batch-Invariance
 

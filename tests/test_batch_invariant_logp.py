@@ -36,6 +36,11 @@ requires_triton_cuda = pytest.mark.skipif(
     reason="Triton batch-invariant logp requires CUDA device and Triton.",
 )
 
+requires_triton = pytest.mark.skipif(
+    not _HAS_TRITON,
+    reason="Triton package required.",
+)
+
 
 def _reference_logp(logits: torch.Tensor, target_ids: torch.Tensor) -> torch.Tensor:
     """Canonical reference: log_softmax(fp32) + gather."""
@@ -278,14 +283,14 @@ class TestValidation:
         logits = torch.randn(4, _V)
         target = torch.tensor([0, -1, 2, 3])
         with pytest.raises(ValueError, match="outside"):
-            op(logits, target, validate=True)
+            op(logits, target)
 
     def test_rejects_target_ge_vocab(self):
         op = NativeBatchInvariantLogpOp()
         logits = torch.randn(4, _V)
         target = torch.tensor([0, 1, _V, 3])
         with pytest.raises(ValueError, match="outside"):
-            op(logits, target, validate=True)
+            op(logits, target)
 
     def test_negative_target_with_ignore_index_ok(self):
         op = NativeBatchInvariantLogpOp()
@@ -755,8 +760,9 @@ class TestTritonIgnoreIndex:
 # ---------------------------------------------------------------------------
 
 
-@requires_triton_cuda
-class TestTritonValidation:
+@requires_triton
+class TestTritonCPUValidation:
+    """Tests that only need Triton importable, not a GPU."""
 
     def _get_op(self):
         from rl_engine.kernels.ops.triton.loss.batch_invariant_logp import (
@@ -768,6 +774,16 @@ class TestTritonValidation:
         op = self._get_op()
         with pytest.raises(RuntimeError, match="requires a GPU"):
             op(torch.randn(4, _V), torch.randint(0, _V, (4,)))
+
+
+@requires_triton_cuda
+class TestTritonValidation:
+
+    def _get_op(self):
+        from rl_engine.kernels.ops.triton.loss.batch_invariant_logp import (
+            TritonBatchInvariantLogpOp,
+        )
+        return TritonBatchInvariantLogpOp()
 
     def test_rejects_1d_logits(self):
         op = self._get_op()
