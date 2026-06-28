@@ -281,9 +281,9 @@ def test_key_padding_mask_excludes_padded_keys():
     diff = (masked - valid_only).abs()
     max_err = diff.max().item()
     print(f"\n[padding mask] max_abs_err={max_err:.3g} (threshold={_PADDING_ATOL:.1g})")
-    assert torch.allclose(masked, valid_only, atol=_PADDING_ATOL, rtol=0.0), (
-        f"Padding-masked result diverges from valid-only by {max_err:.3g} > {_PADDING_ATOL}"
-    )
+    assert torch.allclose(
+        masked, valid_only, atol=_PADDING_ATOL, rtol=0.0
+    ), f"Padding-masked result diverges from valid-only by {max_err:.3g} > {_PADDING_ATOL}"
 
 
 # A query whose every key is padded out has an all -inf row; naive softmax would
@@ -377,15 +377,30 @@ def test_inputs_not_mutated():
     assert torch.equal(mask, mc)
 
 
-def test_gradient_flows():
-    """fp32 autograd (the backward golden source) yields finite grads for q, k, v."""
+def test_gradient_matches_reference():
+    """fp32 autograd grads match autograd through the double-precision reference.
+
+    isfinite only rules out NaN/Inf -- it can't tell a correct gradient from a
+    wrong-but-finite one, and attention's backward (softmax Jacobian + dQ/dK/dV
+    contractions) is the most error-prone in the stack. Backprop a *random*
+    cotangent (not .sum(), whose all-ones cotangent collapses the contraction)
+    and compare q/k/v grads against autograd through the independent
+    _ref_softmax_attn computed in float64 (TF32-immune high-precision golden).
+    """
     op = NativeAttentionOp()
     q, k, v = _qkv(2, 8, 8, seed=8)
     q, k, v = q.requires_grad_(True), k.requires_grad_(True), v.requires_grad_(True)
-    op.forward_fp32(q, k, v, causal=True).sum().backward()
-    for t in (q, k, v):
+
+    out = op.forward_fp32(q, k, v, causal=True)
+    gen = torch.Generator().manual_seed(8)
+    dy = torch.randn(out.shape, generator=gen, dtype=out.dtype)  # seeded for reproducibility
+    out.backward(dy)
+
+    qd, kd, vd = (t.detach().double().requires_grad_(True) for t in (q, k, v))
+    _ref_softmax_attn(qd, kd, vd, causal=True).backward(dy.double())
+    for t, td in ((q, qd), (k, kd), (v, vd)):
         assert t.grad is not None and t.grad.shape == t.shape
-        assert torch.isfinite(t.grad).all()
+        torch.testing.assert_close(t.grad, td.grad.float(), rtol=1e-4, atol=1e-4)
 
 
 def test_registry_dispatches_native_attention_op():
