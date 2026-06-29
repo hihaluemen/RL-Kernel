@@ -160,7 +160,7 @@ class _BatchInvariantLogpFunction(torch.autograd.Function):
         num_tokens = logits_2d.shape[0]
 
         grad_flat = grad_output.reshape(-1).contiguous().to(torch.float32)
-        grad_logits = torch.empty_like(logits_2d, dtype=torch.float32)
+        grad_logits = torch.empty_like(logits_2d)
 
         grid = (num_tokens, triton.cdiv(vocab_size, _BLOCK_V))
         _batch_invariant_logp_bwd_kernel[grid](
@@ -176,9 +176,7 @@ class _BatchInvariantLogpFunction(torch.autograd.Function):
             BLOCK_V=_BLOCK_V,
         )
 
-        grad_logits = grad_logits.to(logits_2d.dtype).reshape(
-            ctx.lead_shape + (vocab_size,)
-        )
+        grad_logits = grad_logits.reshape(ctx.lead_shape + (vocab_size,))
 
         return grad_logits, None, None
 
