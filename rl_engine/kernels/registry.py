@@ -5,7 +5,7 @@ import importlib
 import os
 from enum import Enum, EnumMeta
 from typing import Any, Dict, Optional, Set, Type
-
+ 
 from rl_engine.platforms.device import device_ctx
 from rl_engine.utils.logger import logger
 
@@ -58,6 +58,8 @@ class OpBackend(Enum, metaclass=_KernelEnumMeta):
 
     # WS1 pure-PyTorch ground-truth linear ops
     PYTORCH_NATIVE_LM_HEAD = "rl_engine.kernels.ops.pytorch.linear.lm_head.NativeLMHeadOp"
+    # WS1 pure-PyTorch ground-truth embedding ops
+    PYTORCH_NATIVE_EMBEDDING = "rl_engine.kernels.ops.pytorch.linear.embedding.NativeEmbeddingOp"
 
 
 class KernelRegistry:
@@ -95,6 +97,7 @@ class KernelRegistry:
                 "linear_logp": [OpBackend.TRITON_LINEAR_LOGP, OpBackend.PYTORCH_LINEAR_LOGP],
                 "ratio_kl": [OpBackend.TRITON_RATIO_KL, OpBackend.PYTORCH_RATIO_KL],
                 "lm_head": [OpBackend.PYTORCH_NATIVE_LM_HEAD],
+                "embedding": [OpBackend.PYTORCH_NATIVE_EMBEDDING],
                 "silu": [OpBackend.PYTORCH_NATIVE_SILU],
                 "swiglu": [OpBackend.PYTORCH_NATIVE_SWIGLU],
                 # Default dispatch logic for new operators
@@ -110,6 +113,7 @@ class KernelRegistry:
                 "linear_logp": [OpBackend.TRITON_LINEAR_LOGP, OpBackend.PYTORCH_LINEAR_LOGP],
                 "ratio_kl": [OpBackend.TRITON_RATIO_KL, OpBackend.PYTORCH_RATIO_KL],
                 "lm_head": [OpBackend.PYTORCH_NATIVE_LM_HEAD],
+                "embedding": [OpBackend.PYTORCH_NATIVE_EMBEDDING],
                 "silu": [OpBackend.PYTORCH_NATIVE_SILU],
                 "swiglu": [OpBackend.PYTORCH_NATIVE_SWIGLU],
             },
@@ -120,6 +124,7 @@ class KernelRegistry:
                 "linear_logp": [OpBackend.PYTORCH_LINEAR_LOGP],
                 "ratio_kl": [OpBackend.PYTORCH_RATIO_KL],
                 "lm_head": [OpBackend.PYTORCH_NATIVE_LM_HEAD],
+                "embedding": [OpBackend.PYTORCH_NATIVE_EMBEDDING],
                 "silu": [OpBackend.PYTORCH_NATIVE_SILU],
                 "swiglu": [OpBackend.PYTORCH_NATIVE_SWIGLU],
             },

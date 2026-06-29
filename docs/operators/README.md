@@ -25,4 +25,5 @@ Every operator page should include:
 - [LM Head](lm_head.md)
 - [Policy Ratio + KL Penalty](ratio-kl.md)
 - [Sampling](sampling.md)
+- [Token Embedding](embedding.md)
 - [Operator Doc Template](../contributing/operator-doc-template.md)
