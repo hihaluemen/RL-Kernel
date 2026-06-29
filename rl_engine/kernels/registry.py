@@ -61,6 +61,8 @@ class OpBackend(Enum, metaclass=_KernelEnumMeta):
     PYTORCH_NATIVE_ATTENTION = (
         "rl_engine.kernels.ops.pytorch.attention.standard_attn.NativeAttentionOp"
     )
+    # WS1 pure-PyTorch ground-truth embedding ops
+    PYTORCH_NATIVE_EMBEDDING = "rl_engine.kernels.ops.pytorch.linear.embedding.NativeEmbeddingOp"
 
 
 class KernelRegistry:
@@ -98,6 +100,7 @@ class KernelRegistry:
                 "grpo_loss": [OpBackend.TRITON_GRPO_LOSS, OpBackend.PYTORCH_GRPO_LOSS],
                 "linear_logp": [OpBackend.TRITON_LINEAR_LOGP, OpBackend.PYTORCH_LINEAR_LOGP],
                 "ratio_kl": [OpBackend.TRITON_RATIO_KL, OpBackend.PYTORCH_RATIO_KL],
+                "embedding": [OpBackend.PYTORCH_NATIVE_EMBEDDING],
                 "silu": [OpBackend.PYTORCH_NATIVE_SILU],
                 "swiglu": [OpBackend.PYTORCH_NATIVE_SWIGLU],
                 # Default dispatch logic for new operators
@@ -113,6 +116,7 @@ class KernelRegistry:
                 "grpo_loss": [OpBackend.TRITON_GRPO_LOSS, OpBackend.PYTORCH_GRPO_LOSS],
                 "linear_logp": [OpBackend.TRITON_LINEAR_LOGP, OpBackend.PYTORCH_LINEAR_LOGP],
                 "ratio_kl": [OpBackend.TRITON_RATIO_KL, OpBackend.PYTORCH_RATIO_KL],
+                "embedding": [OpBackend.PYTORCH_NATIVE_EMBEDDING],
                 "silu": [OpBackend.PYTORCH_NATIVE_SILU],
                 "swiglu": [OpBackend.PYTORCH_NATIVE_SWIGLU],
             },
@@ -123,6 +127,7 @@ class KernelRegistry:
                 "grpo_loss": [OpBackend.PYTORCH_GRPO_LOSS],
                 "linear_logp": [OpBackend.PYTORCH_LINEAR_LOGP],
                 "ratio_kl": [OpBackend.PYTORCH_RATIO_KL],
+                "embedding": [OpBackend.PYTORCH_NATIVE_EMBEDDING],
                 "silu": [OpBackend.PYTORCH_NATIVE_SILU],
                 "swiglu": [OpBackend.PYTORCH_NATIVE_SWIGLU],
             },
