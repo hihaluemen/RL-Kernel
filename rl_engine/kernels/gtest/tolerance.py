@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 
-_CONTRACT_PATH = Path(__file__).with_name("tolerance_contract.yaml")
+_CONTRACT_PATH = Path(__file__).with_name("tolerance_contract.json")
 
 
 def load_contract(path: str | Path = _CONTRACT_PATH) -> dict[str, Any]:

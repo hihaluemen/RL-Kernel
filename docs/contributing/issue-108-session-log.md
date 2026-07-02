@@ -31,7 +31,7 @@ rl_engine/kernels/gtest/
   operator_inputs.py
   operator_specs.py
   tolerance.py
-  tolerance_contract.yaml
+  tolerance_contract.json
 
 scripts/check_operator.py
 
@@ -48,7 +48,7 @@ Files:
 
 ```text
 rl_engine/kernels/gtest/tolerance.py
-rl_engine/kernels/gtest/tolerance_contract.yaml
+rl_engine/kernels/gtest/tolerance_contract.json
 tests/test_tolerance_contract.py
 ```
 
@@ -296,7 +296,7 @@ Rules:
 File:
 
 ```text
-rl_engine/kernels/gtest/tolerance_contract.yaml
+rl_engine/kernels/gtest/tolerance_contract.json
 ```
 
 Reuse an existing class when possible:
