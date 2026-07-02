@@ -48,9 +48,24 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keygen -y -f ~/.ssh/id_ed25519 > /dev/null && echo "key OK" || echo "key BROKEN"
 
+      # Follow-up (#191): to test multiple architectures, add a matrix and pass
+      # GPU_ID + TARGET_SM through to the script (run_gpu_ci.sh reads both; it
+      # normalizes TARGET_SM and asserts the provisioned pod actually matches it):
+      #   strategy:
+      #     matrix:
+      #       include:
+      #         - { gpu_id: "NVIDIA RTX A4000",      target_sm: "8.6" }   # Ampere
+      #         - { gpu_id: "NVIDIA A100 80GB PCIe", target_sm: "8.0" }
+      #         - { gpu_id: "NVIDIA H100 PCIe",      target_sm: "9.0" }   # + KERNEL_ALIGN_FORCE_SM90=1 to exercise Hopper kernels
+      #         - { gpu_id: "NVIDIA B200",           target_sm: "10.0" }
+      # Per-arch jobs must NOT fall back to a different-capability GPU: the script
+      # fails fast when the pod arch != requested TARGET_SM, so keep fallback within
+      # the same compute capability (or unset it for these jobs).
       - name: Run GPU tests on RunPod
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           PR_REPO_URL: ${{ github.event.pull_request.head.repo.clone_url }}
           PR_SHA: ${{ github.event.pull_request.head.sha }}
+          # GPU_ID: ${{ matrix.gpu_id }}
+          # TARGET_SM: ${{ matrix.target_sm }}
         run: bash ci/run_gpu_ci.sh

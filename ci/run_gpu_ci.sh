@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# TP=2
-PRIMARY_GPU_ID="NVIDIA RTX A4000"
-PRIMARY_GPU_COUNT=2
+# TP=2 (override via env; GPU_ID/GPU_COUNT accepted as matrix-friendly aliases)
+PRIMARY_GPU_ID="${PRIMARY_GPU_ID:-${GPU_ID:-NVIDIA RTX A4000}}"
+PRIMARY_GPU_COUNT="${PRIMARY_GPU_COUNT:-${GPU_COUNT:-2}}"
 
 # TP=1
-FALLBACK_GPU_ID="NVIDIA A40"
-FALLBACK_GPU_COUNT=1
+FALLBACK_GPU_ID="${FALLBACK_GPU_ID:-NVIDIA A40}"
+FALLBACK_GPU_COUNT="${FALLBACK_GPU_COUNT:-1}"
+
+# Optional explicit compile target (e.g. "9.0" or "90"). When set it is treated as
+# an ASSERTION: the provisioned pod must actually be this arch (checked on the pod in
+# the remote build block), so a cross-architecture resource fallback fails fast rather
+# than silently compiling+launching mismatched SASS.
+TARGET_SM="${TARGET_SM:-}"
 
 CI_IMAGE="${CI_IMAGE:-runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04}"
 DISK_GB=40
@@ -127,17 +133,61 @@ if ! "$PY" -c "import torch" >/dev/null 2>&1; then
   done
 fi
 echo "[remote] Using interpreter: $PY"
-export TORCH_CUDA_ARCH_LIST=8.6
 export FORCE_CUDA=1
 export MAX_JOBS=8
+
+# --- Determine the compile architecture (replaces the hardcoded sm_86) ---
+# Normalize a compact (e.g. 90) or dotted (e.g. 9.0) compute cap to torch dotted
+# form, preserving an optional +PTX suffix.
+normalize_sm() {
+  sm_in="$1"; sm_ptx=""
+  case "$sm_in" in *+PTX) sm_ptx="+PTX"; sm_in="${sm_in%+PTX}";; esac
+  case "$sm_in" in
+    *.*) : ;;
+    [0-9][0-9]|[0-9][0-9][0-9]) sm_major="${sm_in%?}"; sm_in="${sm_major}.${sm_in#$sm_major}" ;;
+    *) return 1 ;;
+  esac
+  case "$sm_in" in [0-9]*.[0-9]|[0-9]*.[0-9][0-9]) echo "${sm_in}${sm_ptx}" ;; *) return 1 ;; esac
+}
+
+# The pod always has a GPU during CI, so detect its real compute capability.
+ACTUAL_SM=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d "[:space:]")
+[ -z "$ACTUAL_SM" ] && ACTUAL_SM=$("$PY" -c "import torch;a,b=torch.cuda.get_device_capability();print(f\"{a}.{b}\")" 2>/dev/null || true)
+[ -z "$ACTUAL_SM" ] && { echo "[remote] FATAL: cannot determine GPU compute capability"; exit 3; }
+
+REQUESTED_SM="'"${TARGET_SM}"'"
+if [ -n "$REQUESTED_SM" ]; then
+  NORM_REQ=$(normalize_sm "$REQUESTED_SM") || { echo "[remote] FATAL: unsupported TARGET_SM=$REQUESTED_SM"; exit 3; }
+  NORM_REQ_BASE="${NORM_REQ%+PTX}"
+  if [ "$NORM_REQ_BASE" != "$ACTUAL_SM" ]; then
+    echo "[remote] FATAL: requested TARGET_SM=$REQUESTED_SM (sm_$NORM_REQ_BASE) but provisioned GPU is sm_$ACTUAL_SM."
+    echo "[remote]        Refusing to build mismatched kernels (likely a cross-arch resource fallback)."
+    exit 3
+  fi
+  BUILD_SM="$NORM_REQ_BASE"
+else
+  BUILD_SM=$(normalize_sm "$ACTUAL_SM") || { echo "[remote] FATAL: unsupported detected arch $ACTUAL_SM"; exit 3; }
+fi
+case "$BUILD_SM" in *+PTX) export TORCH_CUDA_ARCH_LIST="$BUILD_SM" ;; *) export TORCH_CUDA_ARCH_LIST="${BUILD_SM}+PTX" ;; esac
+echo "[remote] Detected GPU sm_$ACTUAL_SM; building _C for TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST"
+
 cd /workspace
 git clone '"${PR_REPO_URL:-https://github.com/RL-Align/RL-Kernel.git}"' repo
 cd repo
 git fetch origin '"${PR_SHA}"'
 git checkout --detach '"${PR_SHA}"'
-"$PY" -m pip install -e .
+# Log torch BEFORE install: the image ships torch 2.4.0 while the project wants
+# >=2.4.1, so pip may upgrade it here; ci_smoke.py re-prints the post-install version.
+"$PY" -c "import torch;print(f\"[remote] pre-install torch {torch.__version__} cuda {torch.version.cuda}\")"
+# --no-build-isolation: torch is preinstalled in the image; without this flag PEP 517
+# isolation hides torch from setup.py -> get_extensions() returns [] -> the _C extension
+# is never built (the real cause of the reported _C=None / NoneType failures).
+"$PY" -m pip install --no-build-isolation -e .
 "$PY" -m pip install pytest
 nvidia-smi
+# Fail fast: verify _C actually built AND launches on this GPU, instead of silently
+# falling back to native kernels (which would leave GPU CI green while testing nothing).
+"$PY" scripts/ci_smoke.py
 '"${TEST_CMD}"
 
 echo "[ci] Launching remote test suite on GPU pod (Distributed Execution Mode: TP=${GPU_COUNT})..."
