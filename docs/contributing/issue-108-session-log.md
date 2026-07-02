@@ -202,6 +202,8 @@ Supported key options:
 --token-value     Token id for constant mode, reduced modulo vocab.
 --seed            Random seed for reproducible random inputs.
 --check-grad      Also compare gradients for inputs declared by the operator spec.
+--grad-mode       Upstream gradient mode for --check-grad: random by default; ones for smoke tests.
+--grad-seed       Random upstream gradient seed for --grad-mode random.
 --json            Print the full structured report as JSON.
 ```
 
@@ -416,12 +418,15 @@ Change:
 - Added `_run_case_backward()` to compare candidate forward outputs and selected input gradients against the PyTorch gold path.
 - Added `OperatorSpec.grad_input_names`; `logp` declares `("logits",)`.
 - Added `scripts/check_operator.py --check-grad`.
+- Added `--grad-mode ones|random` and `--grad-seed` for backward checks.
 
 Reasoning:
 
 - Forward-only checks can miss incorrect or disconnected backward paths.
 - Gradient inputs must be declared per operator because not every floating tensor should receive gradients.
 - Input generation remains independent of autograd; the runner clones inputs and enables `requires_grad` only inside the backward check path.
+- `grad_mode=random` is the default and catches backward bugs hidden by all-one upstream gradients.
+- `grad_mode=ones` remains available for quick smoke tests and preserves the old `output.sum().backward()` behavior.
 
 Known backend limitation:
 
@@ -457,7 +462,7 @@ Reasoning:
 Example Triton smoke command:
 
 ```bash
-python scripts/check_operator.py   --op linear_logp   --candidate triton   --device cuda   --dtype bf16   --batch 1   --seq 2   --vocab 1024   --normalized-dim 4096   --check-grad
+python scripts/check_operator.py   --op linear_logp   --candidate triton   --device cuda   --dtype bf16   --batch 1   --seq 2   --vocab 1024   --normalized-dim 4096   --check-grad   --grad-mode random   --grad-seed 123
 ```
 
 Observed bf16 result on H100:

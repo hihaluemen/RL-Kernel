@@ -93,6 +93,14 @@ def parse_args() -> argparse.Namespace:
         help="Optional tolerance override key, for example sm90. Defaults to contract.default.",
     )
     parser.add_argument("--check-grad", action="store_true", help="Also compare gradients for supported inputs.")
+    # Defaults to random because it catches bugs hidden by output.sum().backward().
+    parser.add_argument(
+        "--grad-mode",
+        choices=("ones", "random"),
+        default="random",
+        help="Upstream gradient mode used with --check-grad.",
+    )
+    parser.add_argument("--grad-seed", type=int, default=123, help="Seed for --grad-mode random.")
     parser.add_argument("--json", action="store_true", help="Print the full structured report as JSON.")
     return parser.parse_args()
 
@@ -108,6 +116,8 @@ def main() -> None:
         candidates=[candidate],
         cases=[case],
         check_grad=args.check_grad,
+        grad_mode=args.grad_mode,
+        grad_seed=args.grad_seed,
     )
 
     if args.json:

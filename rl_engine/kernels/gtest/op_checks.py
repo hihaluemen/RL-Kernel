@@ -97,6 +97,8 @@ def run_operator_suite(
     cases: Sequence[OperatorCase],
     contract: Mapping[str, Any] | None = None,
     check_grad: bool = False,
+    grad_mode: str = "random",
+    grad_seed: int = 123,
 ) -> OperatorCheckReport:
     """Run candidates against gold outputs and return a structured report."""
 
@@ -106,7 +108,14 @@ def run_operator_suite(
     # camdidate : test instance
     # loaded_contract : tolerance table
     candidate_reports = [
-        _run_candidate(candidate, cases, loaded_contract, check_grad=check_grad)
+        _run_candidate(
+            candidate,
+            cases,
+            loaded_contract,
+            check_grad=check_grad,
+            grad_mode=grad_mode,
+            grad_seed=grad_seed,
+        )
         for candidate in candidates
     ]
     passed_candidates = sum(1 for report in candidate_reports if report.passed)
@@ -128,9 +137,22 @@ def _run_candidate(
     contract: Mapping[str, Any],
     *,
     check_grad: bool,
+    grad_mode: str,
+    grad_seed: int,
 ) -> CandidateReport:
-    case_runner = _run_case_backward if check_grad else _run_case
-    case_checks = [case_runner(candidate, case, contract) for case in cases]
+    if check_grad:
+        case_checks = [
+            _run_case_backward(
+                candidate,
+                case,
+                contract,
+                grad_mode=grad_mode,
+                grad_seed=grad_seed,
+            )
+            for case in cases
+        ]
+    else:
+        case_checks = [_run_case(candidate, case, contract) for case in cases]
     total_outputs = sum(len(case.outputs) for case in case_checks)
     passed_outputs = sum(
         1 for case in case_checks for output in case.outputs if output.passed
@@ -161,6 +183,9 @@ def _run_case_backward(
     candidate: CandidateSpec,
     case: OperatorCase,
     contract: Mapping[str, Any],
+    *,
+    grad_mode: str,
+    grad_seed: int,
 ) -> CaseCheck:
     if not case.grad_input_names:
         raise ValueError(f"case {case.name!r} does not declare gradient inputs")
@@ -169,8 +194,23 @@ def _run_case_backward(
     gold_inputs = _clone_inputs_for_backward(case.inputs, case.grad_input_names)
     candidate_outputs = _flatten_tensors(_call_candidate(candidate.fn, candidate_inputs))
     gold_outputs = _flatten_tensors(case.gold_fn(**gold_inputs))
-    candidate_grads = _backward_grads(candidate_outputs, candidate_inputs, case.grad_input_names)
-    gold_grads = _backward_grads(gold_outputs, gold_inputs, case.grad_input_names)
+    # Candidate and gold must use the same upstream gradients; otherwise we
+    # would compare different vector-Jacobian products.
+    # grad_mode="ones" is the old output.sum().backward() smoke path.
+    # grad_mode="random" is closer to training, where dL/doutput is non-uniform.
+    grad_outputs = _make_grad_outputs(candidate_outputs, grad_mode=grad_mode, seed=grad_seed)
+    candidate_grads = _backward_grads(
+        candidate_outputs,
+        candidate_inputs,
+        case.grad_input_names,
+        grad_outputs=grad_outputs,
+    )
+    gold_grads = _backward_grads(
+        gold_outputs,
+        gold_inputs,
+        case.grad_input_names,
+        grad_outputs=_match_grad_outputs(grad_outputs, gold_outputs),
+    )
     output_checks = _compare_case_outputs(
         candidate,
         case,
@@ -178,6 +218,9 @@ def _run_case_backward(
         candidate_outputs,
         gold_outputs,
     ).outputs
+    # Reuse the same tolerance class for gradients as for values. This is a
+    # first conservative default; operator-specific gradient tolerances can be
+    # split out later if a real backend shows different numerical behavior.
     atol, rtol = _resolve_tolerance(
         contract,
         op_class=case.op_class,
@@ -279,8 +322,19 @@ def _backward_grads(
     outputs: list[torch.Tensor],
     inputs: Mapping[str, Any],
     grad_input_names: tuple[str, ...],
+    *,
+    grad_outputs: list[torch.Tensor],
 ) -> list[torch.Tensor]:
-    loss = sum(output.float().sum() for output in outputs)
+    if len(outputs) != len(grad_outputs):
+        raise ValueError(
+            f"got {len(grad_outputs)} upstream gradients for {len(outputs)} outputs"
+        )
+    # `ones` makes this equivalent to output.sum().backward(); `random` tests a
+    # stricter vector-Jacobian product.
+    loss = sum(
+        (output.float() * grad_output.to(device=output.device).float()).sum()
+        for output, grad_output in zip(outputs, grad_outputs, strict=True)
+    )
     loss.backward()
     grads: list[torch.Tensor] = []
     for name in grad_input_names:
@@ -289,6 +343,50 @@ def _backward_grads(
             raise ValueError(f"gradient for input {name!r} is None")
         grads.append(grad)
     return grads
+
+
+def _make_grad_outputs(
+    outputs: list[torch.Tensor],
+    *,
+    grad_mode: str,
+    seed: int,
+) -> list[torch.Tensor]:
+    if grad_mode == "ones":
+        # All-one upstream gradients make the scalar loss equal output.sum().
+        return [torch.ones_like(output, dtype=torch.float32) for output in outputs]
+    if grad_mode != "random":
+        raise ValueError(f"unsupported grad_mode: {grad_mode}")
+
+    grad_outputs: list[torch.Tensor] = []
+    generators: dict[torch.device, torch.Generator] = {}
+    for output in outputs:
+        if output.device not in generators:
+            # Generators are device-local; a CUDA generator cannot draw CPU tensors.
+            generator = torch.Generator(device=output.device)
+            generator.manual_seed(seed)
+            generators[output.device] = generator
+        # Random upstream gradients test a non-uniform dL/doutput. The same
+        # tensors are later reused for gold so the comparison stays fair.
+        grad_outputs.append(
+            torch.randn(
+                output.shape,
+                generator=generators[output.device],
+                device=output.device,
+                dtype=torch.float32,
+            )
+        )
+    return grad_outputs
+
+
+def _match_grad_outputs(
+    grad_outputs: list[torch.Tensor],
+    outputs: list[torch.Tensor],
+) -> list[torch.Tensor]:
+    # Reuse upstream values for gold; only move device when needed.
+    return [
+        grad_output.to(device=output.device)
+        for grad_output, output in zip(grad_outputs, outputs, strict=True)
+    ]
 
 
 def _flatten_tensors(value: Any) -> list[torch.Tensor]:

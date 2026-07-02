@@ -170,3 +170,52 @@ def test_backward_suite_reports_failure_for_bad_gradient():
     assert not report.passed
     assert gradient_output.message == "gradient:logits"
     assert gradient_output.max_abs_error > 0.0
+
+
+def test_random_grad_mode_catches_nonuniform_upstream_gradient_bug():
+    # Forward is identity, so only a non-uniform upstream gradient can expose
+    # the intentionally wrong backward below.
+    class MeanUpstreamIdentity(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, x):
+            return x.clone()
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            # Wrong for random upstream gradients, but correct when all values are 1.
+            return grad_output.mean().expand_as(grad_output)
+
+    def bad_identity(x):
+        return MeanUpstreamIdentity.apply(x)
+
+    case = OperatorCase(
+        name="identity",
+        op_class="elementwise",
+        dtype=torch.float32,
+        inputs={"x": torch.randn(8, dtype=torch.float32)},
+        gold_fn=lambda x: x,
+        grad_input_names=("x",),
+    )
+
+    ones_report = run_operator_suite(
+        "identity",
+        candidates=[CandidateSpec(name="bad-identity", backend="test", fn=bad_identity)],
+        cases=[case],
+        check_grad=True,
+        grad_mode="ones",
+    )
+    # ones passes by design; random must fail and prove the stricter path works.
+    random_report = run_operator_suite(
+        "identity",
+        candidates=[CandidateSpec(name="bad-identity", backend="test", fn=bad_identity)],
+        cases=[case],
+        check_grad=True,
+        grad_mode="random",
+        grad_seed=7,
+    )
+
+    assert ones_report.passed
+    gradient_output = random_report.candidates[0].cases[0].outputs[1]
+    assert not random_report.passed
+    assert gradient_output.message == "gradient:x"
+    assert gradient_output.max_abs_error > 0.0
