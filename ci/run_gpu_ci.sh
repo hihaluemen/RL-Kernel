@@ -178,14 +178,23 @@ git clone '"${PR_REPO_URL:-https://github.com/RL-Align/RL-Kernel.git}"' repo
 cd repo
 git fetch origin '"${PR_SHA}"'
 git checkout --detach '"${PR_SHA}"'
-# Log torch BEFORE install: the image ships torch 2.4.0 while the project wants
-# >=2.4.1, so pip may upgrade it here; ci_smoke.py re-prints the post-install version.
-"$PY" -c "import torch;print(f\"[remote] pre-install torch {torch.__version__} cuda {torch.version.cuda}\")"
-# --no-build-isolation: torch is preinstalled in the image; without this flag PEP 517
-# isolation hides torch from setup.py -> get_extensions() returns [] -> the _C extension
-# is never built (the real cause of the reported _C=None / NoneType failures).
-"$PY" -m pip install --no-build-isolation -e .
-"$PY" -m pip install pytest
+"$PY" -c "import torch;print(f\"[remote] image torch {torch.__version__} cuda {torch.version.cuda}\")"
+# --- Deterministic torch + build order (review: KJLdefeated) ---
+# Pin the exact torch used to BOTH compile the extension and run the tests, so the build is
+# reproducible and the compiled ABI always matches the runtime torch. Otherwise the image
+# ships torch 2.4.0 while the project floor is >=2.4.1, so a bare pip install -e . would
+# non-deterministically upgrade torch (possibly to a CUDA build that mismatches the pod).
+# Keep the CUDA tag in TORCH_INDEX_URL (cu124) in sync with the CI image.
+TORCH_SPEC="${TORCH_SPEC:-torch==2.4.1}"
+TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}"
+"$PY" -m pip install --no-cache-dir "$TORCH_SPEC" --index-url "$TORCH_INDEX_URL"
+"$PY" -c "import torch;print(f\"[remote] pinned torch {torch.__version__} cuda {torch.version.cuda}\")"
+# --no-build-isolation: make torch visible to setup.py (else PEP 517 isolation hides it and
+#   get_extensions() returns [] so the _C extension is never built = the reported _C=None bug).
+# --no-deps: do NOT let pip re-resolve/upgrade torch during the editable install, keeping the
+#   build order deterministic (pinned torch -> compile -> runtime deps installed explicitly).
+"$PY" -m pip install --no-build-isolation --no-deps -e .
+"$PY" -m pip install --no-cache-dir numpy tabulate accelerate transformers pytest
 nvidia-smi
 # Fail fast: verify _C actually built AND launches on this GPU, instead of silently
 # falling back to native kernels (which would leave GPU CI green while testing nothing).
