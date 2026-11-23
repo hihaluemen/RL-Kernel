@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,6 +29,10 @@ ARMS = (ARM_NATIVE, ARM_RLKERNEL)
 MODE_SYNC = "sync"
 MODE_ASYNC = "async"
 
+SCHEDULER_LOCAL = "local"
+SCHEDULER_RAY = "ray"
+SCHEDULERS = (SCHEDULER_LOCAL, SCHEDULER_RAY)
+
 # vLLM execution for the rollout server. "graph" mirrors the VIME CUDA setup of
 # RL-Kernel PR 377: no torch.compile (-O0) and full CUDA graphs for decode,
 # captured at every exact batch size 1..max_num_seqs. Both arms get the same
@@ -36,6 +41,10 @@ VLLM_EAGER = "eager"
 VLLM_GRAPH = "graph"
 VLLM_EXECUTIONS = (VLLM_EAGER, VLLM_GRAPH)
 VLLM_SERVER_ARGS_ENV = "RL_KERNEL_AREAL_VLLM_SERVER_ARGS"
+# Not RL_KERNEL_-prefixed, so the scrubbing below keeps them for the native arm too.
+PROFILE_STEPS_ENV = "RLK_AREAL_PROFILE_STEPS"
+PROFILE_DIR_ENV = "RLK_AREAL_PROFILE_DIR"
+NATIVE_ROPE_FUSION_ENV = "RLK_AREAL_NATIVE_ROPE_FUSION"
 
 # Environment that would change numerics; scrubbed from every arm, then the
 # RL-Kernel arm sets exactly what it needs.
@@ -56,6 +65,8 @@ class ExperimentSpec:
     rollout_tp: int = 4
     rollout_dp: int = 1
     n_gpus_per_node: int = 8
+    n_nodes: int = 1
+    scheduler: str = SCHEDULER_LOCAL
     batch_size: int = 32
     n_samples: int = 4
     max_new_tokens: int = 1024
@@ -68,6 +79,12 @@ class ExperimentSpec:
     padded_vocab_size: int | None = None
     dataset_path: str | None = None
     extra_env: Mapping[str, str] = field(default_factory=dict)
+    # Actor versions profiled with torch.profiler on rank 0 (both arms); empty = off.
+    profile_steps: tuple[int, ...] = ()
+    # Same-version consistency metrics on the native arm in sync mode too (numerics unchanged).
+    native_observe: bool = False
+    # Megatron TE fused RoPE on the native arm only (numerics unchanged vs stock AReaL intent).
+    native_rope_fusion: bool = False
 
     def validate(self) -> None:
         if self.mode not in (MODE_SYNC, MODE_ASYNC):
@@ -80,11 +97,32 @@ class ExperimentSpec:
             raise ValueError("steps, batch_size and n_samples must be positive")
         if self.mode == MODE_ASYNC and self.max_offpolicyness <= 0:
             raise ValueError("async mode needs max_offpolicyness >= 1")
+        if self.scheduler not in SCHEDULERS:
+            raise ValueError(f"scheduler must be one of {SCHEDULERS}")
+        if self.n_nodes <= 0 or self.n_gpus_per_node <= 0:
+            raise ValueError("n_nodes and n_gpus_per_node must be positive")
+        if any(step < 0 or step >= self.steps for step in self.profile_steps):
+            raise ValueError(f"profile_steps must lie in [0, {self.steps})")
+        if self.n_nodes > 1 and self.scheduler != SCHEDULER_RAY:
+            raise ValueError(
+                f"n_nodes={self.n_nodes} needs scheduler={SCHEDULER_RAY!r}; "
+                f"the {SCHEDULER_LOCAL!r} scheduler only runs on one node"
+            )
+        # Tensor/context parallel groups never span nodes: each group must fit in one.
+        for name, width in (
+            ("train TP*CP", self.train_tp * self.train_cp),
+            ("rollout TP", self.rollout_tp),
+        ):
+            if width > self.n_gpus_per_node:
+                raise ValueError(
+                    f"{name} ({width}) exceeds the {self.n_gpus_per_node} GPUs of one node"
+                )
         used = self.train_tp * self.train_cp + self.rollout_tp * self.rollout_dp
-        if used > self.n_gpus_per_node:
+        total = self.n_nodes * self.n_gpus_per_node
+        if used > total:
             raise ValueError(
                 f"train TP*CP ({self.train_tp}*{self.train_cp}) + rollout TP*DP "
-                f"({self.rollout_tp}*{self.rollout_dp}) exceeds {self.n_gpus_per_node} GPUs"
+                f"({self.rollout_tp}*{self.rollout_dp}) exceeds {total} GPUs"
             )
 
     @property
@@ -155,12 +193,12 @@ def _scheduling_spec(base: Any, *, cmd: str, env_vars: Mapping[str, str]) -> lis
     return [first]
 
 
-def worker_mode(arm: str, mode: str) -> str | None:
+def worker_mode(arm: str, mode: str, native_observe: bool = False) -> str | None:
     """Adapter mode for the actor workers of one arm."""
 
     if arm == ARM_RLKERNEL:
         return "strict"
-    if arm == ARM_NATIVE and mode == MODE_ASYNC:
+    if arm == ARM_NATIVE and (mode == MODE_ASYNC or native_observe):
         return "observe"  # native numerics, same-version metrics only
     return None
 
@@ -177,14 +215,19 @@ def arm_environment(
     if arm not in ARMS:
         raise ValueError(f"unknown arm {arm!r}")
     env: dict[str, str] = {"RL_KERNEL_AREAL_STATS_JSONL": str(stats_path)}
+    if spec.profile_steps:
+        env[PROFILE_STEPS_ENV] = ",".join(str(step) for step in sorted(spec.profile_steps))
+        env[PROFILE_DIR_ENV] = str(Path(stats_path).parent / "profile")
     overrides = vllm_server_overrides(spec)
     if overrides:
         env[VLLM_SERVER_ARGS_ENV] = json.dumps(overrides, separators=(",", ":"))
-    mode = worker_mode(arm, spec.mode)
+    mode = worker_mode(arm, spec.mode, spec.native_observe)
     if mode is not None:
         env["RL_KERNEL_AREAL_MODE"] = mode
     if arm == ARM_NATIVE:
         env["VLLM_PLUGINS"] = ""
+        if spec.native_rope_fusion:
+            env[NATIVE_ROPE_FUSION_ENV] = "1"
         return env
     if spec.real_vocab_size is None or spec.padded_vocab_size is None:
         raise ValueError("the RL-Kernel arm needs the real and padded vocabulary sizes")
@@ -209,8 +252,16 @@ def arm_environment(
             "CUBLAS_WORKSPACE_CONFIG": ":16:8",
             "CUBLASLT_WORKSPACE_SIZE": "1",
             "NCCL_NVLS_ENABLE": "0",
+            # FA4 CuTe JIT-compiles every kernel on first use (the decode kernel
+            # alone costs ~6 s of vLLM graph capture). The persistent cache is
+            # keyed by the compile key and a fingerprint of the FA4 sources, so
+            # later runs load the identical kernel instead of rebuilding it.
+            "FLASH_ATTENTION_CUTE_DSL_CACHE_ENABLED": "1",
         }
     )
+    cache_dir = os.environ.get("FLASH_ATTENTION_CUTE_DSL_CACHE_DIR")
+    if cache_dir:
+        env["FLASH_ATTENTION_CUTE_DSL_CACHE_DIR"] = cache_dir
     env.update({str(k): str(v) for k, v in spec.extra_env.items()})
     return env
 
@@ -235,12 +286,12 @@ def build_config(
         "seed": spec.seed,
         "total_train_steps": spec.steps,
         "enable_offload": False,
-        "cluster.n_nodes": 1,
+        "cluster.n_nodes": spec.n_nodes,
         "cluster.n_gpus_per_node": spec.n_gpus_per_node,
         "cluster.fileroot": str(arm_dir / "fileroot"),
         "cluster.name_resolve.type": "nfs",
         "cluster.name_resolve.nfs_record_root": str(arm_dir / "name_resolve"),
-        "scheduler.type": "local",
+        "scheduler.type": spec.scheduler,
         "actor.path": spec.model,
         "actor.backend": spec.actor_backend(),
         "actor.dtype": "bfloat16",
@@ -282,8 +333,15 @@ def build_config(
     # The example config has no ref model when kl_ctl == 0; drop it to keep
     # AReaL's shared compute_logp metric free of reference-model scoring.
     config.pop("ref", None)
-    mode = worker_mode(arm, spec.mode)
-    actor_cmd = WORKER_CMD if mode is not None else DEFAULT_RPC_CMD
+    mode = worker_mode(arm, spec.mode, spec.native_observe)
+    # The profiler is installed by the RL-Kernel worker, which runs AReaL's RPC
+    # server unchanged when no adapter mode is selected.
+    needs_worker = (
+        mode is not None
+        or spec.profile_steps
+        or (arm == ARM_NATIVE and spec.native_rope_fusion)
+    )
+    actor_cmd = WORKER_CMD if needs_worker else DEFAULT_RPC_CMD
     actor_base = config.get("actor", {}).get("scheduling_spec")
     config["actor"]["scheduling_spec"] = _scheduling_spec(
         actor_base, cmd=actor_cmd, env_vars=env_vars
@@ -310,9 +368,14 @@ __all__ = [
     "DEFAULT_CONFIG",
     "DEFAULT_EXAMPLE",
     "DEFAULT_RPC_CMD",
+    "PROFILE_DIR_ENV",
+    "PROFILE_STEPS_ENV",
     "ExperimentSpec",
     "MODE_ASYNC",
     "MODE_SYNC",
+    "SCHEDULERS",
+    "SCHEDULER_LOCAL",
+    "SCHEDULER_RAY",
     "VLLM_EAGER",
     "VLLM_EXECUTIONS",
     "VLLM_GRAPH",

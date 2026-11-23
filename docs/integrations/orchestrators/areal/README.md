@@ -50,7 +50,11 @@ In `RL_KERNEL_AREAL_MODE=strict` the worker:
 
 `RL_KERNEL_AREAL_MODE=observe` only adds the metrics (native numerics); the
 native arm of an asynchronous comparison uses it so both arms report the same
-breakdown. The native arm of a synchronous comparison runs stock AReaL.
+breakdown. The native arm of a synchronous comparison runs stock AReaL, unless
+`verify run --native-observe` is given, which switches it to observe as well.
+`verify run --native-rope-fusion` turns on Megatron ``apply_rope_fusion`` for the
+native arm via the RL-Kernel worker (TransformerConfig patch only; AReaL
+unchanged). It cannot be combined with the RL-Kernel strict arm.
 
 ## Supported scope
 
@@ -101,7 +105,35 @@ verifier passes them through `RL_KERNEL_AREAL_VLLM_SERVER_ARGS` and
 `run_trainer` appends them to the arguments `vLLMConfig.build_args` returns.
 Both arms receive the same value. Extra environment for
 the RL-Kernel arm (for example an FA4 compatibility layer) goes through
-`--env KEY=VALUE` or `RLK_ENV`.
+`--env KEY=VALUE` or `RLK_ENV`. The RL-Kernel arm also enables the persistent
+FA4 CuTe JIT cache (`FLASH_ATTENTION_CUTE_DSL_CACHE_ENABLED=1`;
+`FLASH_ATTENTION_CUTE_DSL_CACHE_DIR` is passed through when set), so later runs
+load the compiled kernels instead of rebuilding them.
+
+On clusters without an eight-GPU node, `--nodes 2 --gpus 4 --scheduler ray`
+runs the same layout on two nodes through AReaL's Ray scheduler (`--gpus` is
+per node; training TP×CP and rollout TP must each fit in one node). Start the
+Ray cluster first and export `RAY_ADDRESS`. If the first data-service worker on
+a remote node needs more than AReaL's fixed 30 s to start, set
+`RLK_AREAL_WORKERS_READY_TIMEOUT` (seconds); both arms get the same value.
+
+Placement matters for timing: a GPU role that shares a node with the driver, the
+AReaL controller and the Ray head ran up to ~4x slower in our runs. Prefer a Ray
+head with `--num-gpus=0` on a separate CPU node and run the driver there. To pin a
+role instead, start the chosen raylets with a custom resource
+(`ray start --resources='{"rlk_actor_node": 1}'`) and set
+`RLK_AREAL_RAY_ROLE_RESOURCES=actor=rlk_actor_node` (comma-separated
+`role=resource` pairs); every placement-group bundle of that role then also asks
+for a sliver of the resource.
+
+`--profile-steps 3` (comma-separated actor versions) wraps every recomputed-logp
+`forward_batch` and PPO `train_batch` call of those versions on actor rank 0
+in `torch.profiler`, for both arms. Coarse `rlk::attention`, `rlk::mlp`,
+`rlk::rope`, `rlk::lm_head` and `rlk::det_collective` ranges sit around the same
+Megatron entry points in both arms, so the profiles aggregate into comparable
+buckets. A JSON summary and the `key_averages` table per call land in
+`<arm>/profile/`. Profiled steps include the profiler's own overhead and are
+attribution data, not timing evidence.
 
 ## Outputs and verdicts
 

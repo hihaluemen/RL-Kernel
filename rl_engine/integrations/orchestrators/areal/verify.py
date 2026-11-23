@@ -70,6 +70,21 @@ def _git_revision(path: Path) -> dict[str, Any]:
 # --------------------------------------------------------------------------- inventory
 
 
+def _ray_status() -> str | None:
+    """``ray status`` of the cluster named by ``RAY_ADDRESS``, or None without one."""
+
+    address = os.environ.get("RAY_ADDRESS", "").strip()
+    if not address:
+        return None
+    try:
+        return subprocess.check_output(
+            ["ray", "status", "--address", address],
+            text=True, stderr=subprocess.STDOUT, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"unavailable: {error}"
+
+
 def cmd_inventory(args: argparse.Namespace) -> int:
     out = Path(args.out)
     packages: dict[str, str | None] = {}
@@ -99,6 +114,7 @@ def cmd_inventory(args: argparse.Namespace) -> int:
         )
     except (OSError, subprocess.CalledProcessError) as error:
         payload["nvidia_smi"] = f"unavailable: {error}"
+    payload["ray_status"] = _ray_status()
     _write_json(out / "inventory.json", payload)
     print(json.dumps(payload["packages"], indent=2))
     return 0
@@ -302,6 +318,8 @@ def _spec_from_args(args: argparse.Namespace) -> launch.ExperimentSpec:
         rollout_tp=args.rollout_tp,
         rollout_dp=args.rollout_dp,
         n_gpus_per_node=args.gpus,
+        n_nodes=args.nodes,
+        scheduler=args.scheduler,
         batch_size=args.batch_size,
         n_samples=args.n_samples,
         max_new_tokens=args.max_new_tokens,
@@ -312,6 +330,11 @@ def _spec_from_args(args: argparse.Namespace) -> launch.ExperimentSpec:
         padded_vocab_size=args.padded_vocab_size or vocab,
         dataset_path=args.dataset_path,
         extra_env=extra_env,
+        profile_steps=tuple(
+            sorted({int(item) for item in (args.profile_steps or "").split(",") if item})
+        ),
+        native_observe=args.native_observe,
+        native_rope_fusion=args.native_rope_fusion,
     )
 
 
@@ -576,7 +599,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--arms", default="native,rlkernel")
     run.add_argument("--steps", type=int, default=5)
     run.add_argument("--seed", type=int, default=1)
-    run.add_argument("--gpus", type=int, default=8)
+    run.add_argument("--gpus", type=int, default=8, help="GPUs per node")
+    run.add_argument("--nodes", type=int, default=1,
+                     help="number of nodes; more than one requires --scheduler ray")
+    run.add_argument("--scheduler", choices=launch.SCHEDULERS, default=launch.SCHEDULER_LOCAL,
+                     help="AReaL scheduler.type")
     run.add_argument("--train-tp", type=int, default=4)
     run.add_argument("--train-cp", type=int, default=1)
     run.add_argument("--rollout-tp", type=int, default=4)
@@ -593,6 +620,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--real-vocab-size", type=int)
     run.add_argument("--padded-vocab-size", type=int)
     run.add_argument("--env", action="append", help="extra KEY=VALUE for the RL-Kernel arm")
+    run.add_argument("--profile-steps", default="",
+                     help="comma-separated actor versions to torch.profile on rank 0 (both arms)")
+    run.add_argument("--native-observe", action="store_true",
+                     help="add the same-version consistency metrics to the native arm in sync "
+                          "mode as well (async native arms always observe); numerics unchanged")
+    run.add_argument("--native-rope-fusion", action="store_true",
+                     help="enable Megatron apply_rope_fusion on the native arm via the RL-Kernel "
+                          "worker (TE fused THD RoPE); numerics differ from the unfused baseline")
     run.add_argument("--dataset-path",
                      help="local GSM8K dataset (default: openai/gsm8k from the HF hub)")
     run.add_argument("--base-config", help=f"default: <areal-root>/{launch.DEFAULT_CONFIG}")
